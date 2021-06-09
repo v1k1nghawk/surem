@@ -1,0 +1,81 @@
+#!/bin/bash
+###############################################################################
+# Secure file removal
+#
+# syntax:
+# surem Files
+#
+# args:
+#  1..N    Files     - file(s) for secure deletion
+#
+# retcode:
+#   0     - OK
+#   1     - ERROR
+#
+# Programmer: Andrew Art
+# Last modified date: 09.06.2021
+###############################################################################
+
+
+declare -r Ver="00.05"
+declare -i exit_code="0"
+
+echo -en "surem v$Ver | Secure file removal\n\n"
+
+for filepath in "${@:1}"
+do
+  if ! [[ -f "${filepath}" ]]; then
+      echo -e "File ${filepath} is unaccessible"
+      exit_code="1"
+  else
+      echo -e "File ${filepath} in process..."
+      current_code="0"
+      # Prompt the system to flush file's data to disk
+      chmod --reference=${filepath} ${filepath} &>/dev/null
+      if [[ "$?" != "0" ]]; then
+          current_code="1"
+          echo -e "Cannot prompt the system to fsync the file ${filepath}"
+      fi
+
+      if [[ "`stat -f -L -c %T ${filepath} 2>/dev/null`" == "nfs" ]]; then # Non-local filesystem
+          # Overwrite and delete
+          shred -f -n 7 -z --remove=wipesync "${filepath}" &>/dev/null
+          if [[ "$?" != "0" ]]; then
+              current_code="1"
+              echo -e "Cannot overwrite and securely delete the file ${filepath}"
+          elif [[ "${current_code}" == "0" ]]; then
+              echo -e "File ${filepath} overwritten and securely deleted"
+          fi
+      else                                                                 # Local filesystem
+          # Overwrite
+          read blocks_num block_size < <(stat -c "%b %B" "${filepath}")
+          for i in {1..7}
+          do
+              dd if=/dev/random bs="${block_size}" count="${blocks_num}" of="${filepath}" conv=notrunc &>/dev/null
+              if [[ "$?" != "0" ]]; then
+                  current_code="1"
+                  echo -e "Cannot overwrite data of the file ${filepath}"
+              fi
+          done
+          if [[ "${current_code}" == "0" ]]; then
+              echo -e "File ${filepath} overwritten"
+          fi
+
+          # Delete
+          wipepath=`echo mktemp 2>/dev/null`; [[ "${wipepath}" == "" ]] && (( current_code++ ))
+          mv -f ${filepath} ${wipepath} &>/dev/null; [[ "$?" != "0" ]] && (( current_code++ ))
+          unlink ${wipepath} &>/dev/null; [[ "$?" != "0" ]] && (( current_code++ ))
+          if [[ "${current_code}" != "0" ]]; then
+              echo -e "Cannot securely delete the file ${filepath}"
+          else
+              echo -e "File ${filepath} securely deleted"
+          fi
+      fi
+
+      if [[ "${current_code}" != "0" ]]; then
+          exit_code="${current_code}"
+      fi
+  fi
+done
+
+exit "${exit_code}"
